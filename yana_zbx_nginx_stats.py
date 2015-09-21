@@ -129,8 +129,9 @@ for logname in nginx_log_file:
     end_minute = int(time.mktime(end.timetuple()) / 60) * 60
     minutes = time_delta if timetag == 0 else (end_minute - timetag) / 60
     timetags = [(now - datetime.timedelta(minutes=x)) for x in xrange(minutes, 0, -1)]
-    result_raw = {'qps': 0, 'code_4xx': 0, 'code_5xx': 0, 'request_time': 0}
-    results = dict(zip(timetags, ([{'qps': 0, 'code_4xx': 0, 'code_5xx': 0, 'request_time': 0}] * 60 for x in xrange(minutes, 0, -1))))
+    result_tpl = {'qps': 0, 'code_4xx': 0, 'code_5xx': 0, 'request_time': 0}
+    minute_tpl = [dict(result_tpl) for x in range(4)]
+    results = dict(zip(timetags, (minute_tpl for x in xrange(minutes, 0, -1))))
 
     line = nf.readline()
     while line:
