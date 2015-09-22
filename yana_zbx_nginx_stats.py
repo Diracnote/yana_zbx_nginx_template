@@ -7,6 +7,7 @@ import time
 import socket
 import datetime
 import os.path
+import copy
 
 # noinspection PyBroadException
 try:
@@ -17,7 +18,7 @@ except:
 zabbix_host = '127.0.0.1'  # Zabbix server IP
 zabbix_port = 10051  # Zabbix server port
 hostname = 'Zabbix Agent'  # Name of monitored host, like it shows in zabbix web ui
-time_delta = 30  # grep interval in minutes
+default_time_delta = 5  # grep interval in minutes
 
 # Nginx log file path
 nginx_log_file_path = 'E:/data/logs/'
@@ -35,6 +36,8 @@ class Metric(object):
         self.host = host
         self.key = key
         self.value = value
+        if isinstance(clock, datetime.datetime):
+            clock = int(time.mktime(clock.timetuple()) / 60) * 60
         self.clock = clock
 
     def __repr__(self):
@@ -49,8 +52,8 @@ def send_to_zabbix(metrics, zabbix_host='127.0.0.1', zabbix_port=10051):
     for m in metrics:
         clock = m.clock or ('%d' % time.time())
         metrics_data.append(
-            ('{"host":%s,"key":%s,"value":%s,"clock":%s}') % (j(m.host), j(m.key), j(m.value), j(clock)))
-    json_data = ('{"request":"sender data","data":[%s]}') % (','.join(metrics_data))
+            '{"host":%s,"key":%s,"value":%s,"clock":%s}' % (j(m.host), j(m.key), j(m.value), j(clock)))
+    json_data = '{"request":"sender data","data":[%s]}' % (','.join(metrics_data))
     data_len = struct.pack('<Q', len(json_data))
     packet = 'ZBXD\x01' + data_len + json_data
 
@@ -113,36 +116,21 @@ def write_seek(file, seek, timetag, ctime):
     f.close()
 
 
-for logname in nginx_log_file:
-    seek_file = os.path.join(nginx_log_file_path, os.path.join(seek_file_path, logname))
-    seek, timetag, ctime = read_seek(seek_file)
-
-    logfile = os.path.join(nginx_log_file_path, logname)
+def stat(logfile, results, timetags, seek):
     nf = open(logfile, 'r')
-    # if new log file, don't do seek
-    logctime = int(os.path.getctime(logfile))
-    if logctime == ctime:
-        nf.seek(seek)
-
-    now = datetime.datetime.now()
-    end = datetime.datetime.now() - datetime.timedelta(minutes=1)
-    end_minute = int(time.mktime(end.timetuple()) / 60) * 60
-    minutes = time_delta if timetag == 0 else (end_minute - timetag) / 60
-    timetags = [(now - datetime.timedelta(minutes=x)) for x in xrange(minutes, 0, -1)]
-    result_tpl = {'qps': 0, 'code_4xx': 0, 'code_5xx': 0, 'request_time': 0}
-    minute_tpl = [dict(result_tpl) for x in range(4)]
-    results = dict(zip(timetags, (minute_tpl for x in xrange(minutes, 0, -1))))
-
     line = nf.readline()
+    nf.seek(seek)
+
     while line:
-        for timetag in timetags:
-            tag = timetag.strftime('%d/%b/%Y:%H:%M')
+        for _timetag in timetags:
+            tag = _timetag.strftime('%d/%b/%Y:%H:%M')
             if tag in line:
+                seek = nf.tell()
                 rs = re.match(rex, line)
                 # count
                 # segments = ["qps|0|count", "code_4xx|3|count[400, 500]", "code_5xx|3|count[500, 600]", "request_time|5|avg"]
                 sec = int(rs.group(2))
-                result = results[timetag][sec]
+                result = results[_timetag][sec]
                 result['qps'] += 1
                 code = int(rs.group(4))
                 if 400 <= code < 500:
@@ -153,29 +141,51 @@ for logname in nginx_log_file:
                 break
         line = nf.readline()
 
-    write_seek(seek_file, seek, end_minute, logctime)
     nf.close()
 
-# metric = (len(sys.argv) >= 2) and re.match(r'nginx\[(.*)\]', sys.argv[1], re.M | re.I).group(1) or False
-# data = get(stat_url, username, password).split('\n')
-# data = parse_nginx_stat(data)
-#
-# data_to_send = []
-#
-# # Adding the metrics to response
-# if not metric:
-#     for i in data:
-#         data_to_send.append(Metric(hostname, ('nginx[%s]' % i), data[i]))
-# else:
-#     print data[metric]
-#
-# # Adding the request per seconds to response
-# for t in range(0,60):
-#     data_to_send.append(Metric(hostname, 'nginx[rps]', rps[t], minute+t))
-#
-# # Adding the response codes stats to respons
-# for t in res_code:
-#     data_to_send.append(Metric(hostname, ('nginx[%s]' % t), res_code[t]))
-#
-#
-# send_to_zabbix(data_to_send, zabbix_host, zabbix_port)
+    for m_result in results:
+        for result in results[m_result]:
+            if result['qps'] != 0:
+                print result
+
+    return seek
+
+
+for logname in nginx_log_file:
+    seek_file = os.path.join(nginx_log_file_path, os.path.join(seek_file_path, logname))
+    seek, timetag, ctime = read_seek(seek_file)
+
+    now = datetime.datetime.now()
+    end = datetime.datetime.now() - datetime.timedelta(minutes=1)
+    end_minute = int(time.mktime(end.timetuple()) / 60) * 60
+    minutes = default_time_delta if timetag == 0 else (end_minute - timetag) / 60
+    timetags = [(now - datetime.timedelta(minutes=x)) for x in xrange(minutes, 0, -1)]
+    result_tpl = {'qps': 0, 'code_4xx': 0, 'code_5xx': 0, 'request_time': 0}
+    minute_tpl = list(dict(result_tpl) for x in range(60))
+    results = dict(zip(timetags, (copy.deepcopy(minute_tpl) for x in xrange(minutes, 0, -1))))
+
+    # if new log file, seek old file
+    logfile = os.path.join(nginx_log_file_path, logname)
+    logctime = int(os.path.getctime(logfile))
+    if logctime != ctime:
+        last_hour = datetime.datetime.now() - datetime.timedelta(hours=1)
+        last_logname = '.'.join([logname, last_hour.strftime('%Y-%m-%d.%H')])
+        logfile = os.path.join(nginx_log_file_path, last_logname)
+        stat(logfile, results, timetags, seek)
+        seek = 0
+
+    logfile = os.path.join(nginx_log_file_path, logname)
+    seek = stat(logfile, results, timetags, seek)
+
+    write_seek(seek_file, seek, end_minute, logctime)
+
+    data_to_send = []
+    # Adding the request per seconds to response
+    for m_result in results:
+        for result in results[m_result]:
+            for key in result:
+                data_to_send.append(Metric(hostname, ('nginx[%s]' % key), result[key], m_result))
+
+    print data_to_send
+
+    # send_to_zabbix(data_to_send, zabbix_host, zabbix_port)
