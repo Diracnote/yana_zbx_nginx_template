@@ -73,7 +73,7 @@ def send_to_zabbix(metrics, zabbix_host='127.0.0.1', zabbix_port=10051):
         zabbix.close()
 
         resp = json.loads(resp_body)
-        # print resp
+        print resp
         if resp.get('response') != 'success':
             print 'Got error from Zabbix: %s' % resp
             return False
@@ -117,6 +117,7 @@ def write_seek(file, seek, timetag, ctime):
 
 
 def stat(logfile, results, timetags, seek):
+    print logfile, timetags, seek
     nf = open(logfile, 'r')
     line = nf.readline()
     nf.seek(seek)
@@ -158,7 +159,7 @@ for logname in nginx_log_file:
     now = datetime.datetime.now()
     end = datetime.datetime.now() - datetime.timedelta(minutes=1)
     end_minute = int(time.mktime(end.timetuple()) / 60) * 60
-    minutes = default_time_delta if timetag == 0 else (end_minute - timetag) / 60
+    minutes = (default_time_delta if timetag == 0 else (end_minute - timetag) / 60)
     timetags = [(now - datetime.timedelta(minutes=x)) for x in xrange(minutes, 0, -1)]
     result_tpl = {'qps': 0, 'code_4xx': 0, 'code_5xx': 0, 'request_time': 0}
     minute_tpl = list(dict(result_tpl) for x in range(60))
@@ -167,7 +168,9 @@ for logname in nginx_log_file:
     # if new log file, seek old file
     logfile = os.path.join(nginx_log_file_path, logname)
     logctime = int(os.path.getctime(logfile))
-    if logctime != ctime:
+    logsize = os.path.getsize(logfile)
+    print 'logsize', logsize, 'seek', seek
+    if logsize < seek:
         last_hour = datetime.datetime.now() - datetime.timedelta(hours=1)
         last_logname = '.'.join([logname, last_hour.strftime('%Y-%m-%d.%H')])
         logfile = os.path.join(nginx_log_file_path, last_logname)
@@ -182,10 +185,12 @@ for logname in nginx_log_file:
     data_to_send = []
     # Adding the request per seconds to response
     for m_result in results:
-        for result in results[m_result]:
+        for index in xrange(len(results[m_result])):
+            result = results[m_result][index]
+            minute = int(time.mktime(end.timetuple()) / 60) * 60
             for key in result:
-                data_to_send.append(Metric(hostname, ('nginx[%s]' % key), result[key], m_result))
+                data_to_send.append(Metric(hostname, ('yana.nginx[%s]' % key), result[key], minute + index))
 
     print data_to_send
 
-    # send_to_zabbix(data_to_send, zabbix_host, zabbix_port)
+    send_to_zabbix(data_to_send, zabbix_host, zabbix_port)
